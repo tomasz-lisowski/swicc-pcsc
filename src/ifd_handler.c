@@ -126,7 +126,7 @@ static int32_t icc_powerup(uint16_t const slot_num)
 {
     /* All contact states are set to valid. */
     msg_tx.data.cont_state = 0U;
-    msg_tx.data.ctrl = SWICC_NET_MSG_CTRL_MOCK_RESET_COLD;
+    msg_tx.data.ctrl = SWICC_NET_MSG_CTRL_MOCK_RESET_COLD_PPS_Y;
     msg_tx.data.buf_len_exp = 0U;
     msg_tx.hdr.size = offsetof(swicc_net_msg_data_st, buf);
 
@@ -421,6 +421,15 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
             Log1(PCSC_LOG_ERROR, "APDU is missing a header.");
             return IFD_COMMUNICATION_ERROR;
         }
+        else if (TxLength > 5U)
+        {
+            /**
+             * This makes sure that any extra data in the TxBuffer is ignored
+             * and only the APDU is transmitted.
+             */
+            Log2(PCSC_LOG_DEBUG, "APDU data length is %uB.", TxBuffer[4U]);
+            TxLength = 5U + TxBuffer[4U]; /* 5 + Lc = header_len + data_len. */
+        }
 
         uint8_t const apdu_ins = TxBuffer[1U];
         uint8_t const apdu_ins_xor_ff = apdu_ins ^ 0xFF;
@@ -494,7 +503,8 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
                 }
                 else
                 {
-                    Log1(PCSC_LOG_ERROR, "Received an invalid procedure.");
+                    Log2(PCSC_LOG_ERROR,
+                         "Received an invalid procedure: 0x%02X.", procedure);
                     return IFD_COMMUNICATION_ERROR;
                 }
             }
