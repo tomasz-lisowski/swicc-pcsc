@@ -1,6 +1,6 @@
 SEMVER_MAJOR:=0
-SEMVER_MINOR:=0
-SEMVER_PATCH:=1
+SEMVER_MINOR:=1
+SEMVER_PATCH:=0
 SEMVER_STR:=$(SEMVER_MAJOR).$(SEMVER_MINOR).$(SEMVER_PATCH)
 
 DIR_LIB:=lib
@@ -9,7 +9,6 @@ DIR_SRC:=src
 DIR_INCLUDE:=include
 DIR_BUILD:=build
 CC:=gcc
-LD:=ld
 
 # Information needed for installation.
 DIR_READER_CONFD:=/etc/reader.conf.d
@@ -30,24 +29,27 @@ MAIN_CC_FLAGS:=\
 	-Wshadow \
 	-fPIC \
 	-O2 \
+	-shared \
 	-I$(DIR_INCLUDE) \
 	-I$(DIR_LIB)/swicc/include \
+	-L$(DIR_LIB)/swicc/build \
 	$(shell pkg-config --cflags-only-I libpcsclite) \
+	-Wl,-whole-archive -lswicc -Wl,-no-whole-archive \
 	-DDIR_PCSC_DEV=\"$(DIR_PCSC_DEV)\"
-MAIN_LD_FLAGS:=\
-	-O \
-	-Bdynamic \
-	-Bshareable
+MAIN_LIBSWICC_TARGET:=main
 EXT_LIB_SHARED:=$(EXT_LIB_SHARED).$(SEMVER_STR)
 
 all: main
 .PHONY: all
 
 main: MAIN_LD_FLAGS+=-s
-main: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED) $(DIR_BUILD)/reader.conf
-main-dbg: MAIN_CC_FLAGS+=-g -DDEBUG -fsanitize=address
+main: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED)
+main-dbg-asan: MAIN_CC_FLAGS+=-fsanitize=address
+main-dbg-asan: main-dbg
+main-dbg: MAIN_LIBSWICC_TARGET:=main-dbg
+main-dbg: MAIN_CC_FLAGS+=-g -DDEBUG
 main-dbg: main
-.PHONY: main main-dbg
+.PHONY: main main-dbg main-dbg-asan
 
 install: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED) $(DIR_BUILD)/reader.conf
 ifeq ($(OS),Windows_NT)
@@ -63,8 +65,8 @@ uninstall:
 .PHONY: install uninstall
 
 # Create the dynamic lib.
-$(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED): $(DIR_BUILD) $(MAIN_OBJ)
-	$(LD) -o $(@) $(MAIN_LD_FLAGS) $(MAIN_OBJ)
+$(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED): $(DIR_BUILD) $(DIR_LIB)/swicc/build/$(LIB_PREFIX)swicc.$(EXT_LIB_STATIC) $(MAIN_OBJ)
+	$(CC) -o $(@) $(MAIN_CC_FLAGS) $(MAIN_OBJ)
 
 $(DIR_BUILD)/reader.conf: $(DIR_BUILD)
 	echo "\
@@ -72,6 +74,10 @@ $(DIR_BUILD)/reader.conf: $(DIR_BUILD)
 	\nDEVICENAME   $(DIR_PCSC_DEV)\
 	\nLIBPATH      $(DIR_PCSC_SERIAL)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED)"\
 	 > $(@)
+
+# Build swICC.
+$(DIR_LIB)/swicc/build/$(LIB_PREFIX)swicc.$(EXT_LIB_STATIC):
+	cd $(DIR_LIB)/swicc && $(MAKE) $(MAIN_LIBSWICC_TARGET)
 
 # Compile source files to object files.
 $(DIR_BUILD)/%.o: $(DIR_SRC)/%.c
@@ -84,4 +90,5 @@ $(DIR_BUILD):
 	$(call pal_mkdir,$(@))
 clean:
 	$(call pal_rmdir,$(DIR_BUILD))
+	cd $(DIR_LIB)/swicc && $(MAKE) clean
 .PHONY: clean

@@ -2,19 +2,37 @@
  * IFD handler for PCSC-lite.
  */
 
-#include "io.h"
 #include <debuglog.h>
 #include <ifdhandler.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <swicc/swicc.h>
+#include <sys/socket.h>
 
-#define IFD_SLOT_COUNT_MAX IO_CLIENT_COUNT_LEN
-#define IFD_SERVER_PORT 37324U
+#define IFD_SLOT_COUNT_MAX SWICC_NET_CLIENT_COUNT_MAX
+#define IFD_SERVER_PORT_STR "37324"
 
-static io_ctx_st io_ctx = {
-    .sock_listen = -1,
-    .sock_client = {-1},
-};
+typedef struct client_icc_s
+{
+    char atr[MAX_ATR_SIZE];
+    uint32_t atr_len;
+    uint32_t cont_iface;
+    uint32_t cont_icc;
+    uint32_t buf_len_exp;
+} client_icc_st;
+
+static swicc_net_server_st server_ctx;
+static swicc_net_msg_st msg_tx;
+static swicc_net_msg_st msg_rx;
+
+/* Keep track of client ICCs. */
+static client_icc_st client_icc[IFD_SLOT_COUNT_MAX];
+
+static char dbg_str[2048U];
+static uint16_t dbg_str_len;
 
 /**
  * @brief Parse the Lun into a reader number and slot number and check that
@@ -24,34 +42,140 @@ static io_ctx_st io_ctx = {
  * @param slot_num Where to write the number of the slot.
  * @return 0 on valid Lun (success), -1 on invalid Lun (failure).
  */
-static int32_t lun_parse(DWORD const Lun, DWORD *const reader_num,
-                         DWORD *const slot_num)
+static int32_t lun_parse(DWORD const Lun, uint16_t *const reader_num,
+                         uint16_t *const slot_num)
 {
-    *reader_num = Lun & 0xFFFF0000;
+    /* Safe cast since extracting 2 high bytes. */
+    *reader_num = (uint16_t)((Lun & 0xFFFF0000) >> 4U);
     *slot_num = Lun & 0x0000FFFF;
 
     if (*slot_num >= IFD_SLOT_COUNT_MAX)
     {
-        Log2(PCSC_LOG_ERROR,
-             "Tried to create an unsupported slot: slot_num=%lu", *slot_num);
+        Log2(PCSC_LOG_ERROR, "Tried to create an unsupported slot: slot_num=%u",
+             *slot_num);
         return IFD_COMMUNICATION_ERROR;
     }
     if (*reader_num != 0U)
     {
         Log2(PCSC_LOG_ERROR,
-             "Tried to create an unsupported reader: reader_num=%lu",
+             "Tried to create an unsupported reader: reader_num=%u",
              *reader_num);
         return IFD_COMMUNICATION_ERROR;
     }
     return 0;
 }
 
+static int32_t client_msg_io(uint16_t const slot_num, bool const log_msg_enable)
+{
+    if (log_msg_enable)
+    {
+        dbg_str_len = sizeof(dbg_str);
+        if (swicc_dbg_net_msg_str(dbg_str, &dbg_str_len, "TX:\n", &msg_tx) ==
+            SWICC_RET_SUCCESS)
+        {
+            Log3(PCSC_LOG_DEBUG, "%.*s", dbg_str_len, dbg_str);
+        }
+        else
+        {
+            Log1(PCSC_LOG_ERROR, "Failed to print TX message.");
+        }
+    }
+
+    if (swicc_net_send(server_ctx.sock_client[slot_num], &msg_tx) !=
+        SWICC_RET_SUCCESS)
+    {
+        Log1(PCSC_LOG_ERROR, "Failed to transmit data to ICC.");
+        return -1;
+    }
+
+    if (swicc_net_recv(server_ctx.sock_client[slot_num], &msg_rx) !=
+        SWICC_RET_SUCCESS)
+    {
+        Log1(PCSC_LOG_ERROR, "Failed to receive data from ICC.");
+        return -1;
+    }
+
+    if (log_msg_enable)
+    {
+        dbg_str_len = sizeof(dbg_str);
+        if (swicc_dbg_net_msg_str(dbg_str, &dbg_str_len, "RX:\n", &msg_rx) ==
+            SWICC_RET_SUCCESS)
+        {
+            Log3(PCSC_LOG_DEBUG, "%.*s", dbg_str_len, dbg_str);
+        }
+        else
+        {
+            Log1(PCSC_LOG_ERROR, "Failed to print RX message.");
+        }
+    }
+
+    client_icc[slot_num].cont_icc = msg_rx.data.cont_state;
+    client_icc[slot_num].buf_len_exp = msg_rx.data.buf_len_exp;
+    return 0;
+}
+
+static void client_disconnect(uint16_t const slot_num)
+{
+    swicc_net_server_client_disconnect(&server_ctx, (uint16_t)slot_num);
+    client_icc[slot_num].atr_len = 0U;
+    client_icc[slot_num].cont_iface = 0U;
+    client_icc[slot_num].cont_icc = 0U;
+}
+
+static int32_t icc_powerup(uint16_t const slot_num)
+{
+    /* All contact states are set to valid. */
+    msg_tx.data.cont_state = 0U;
+    msg_tx.data.ctrl = SWICC_NET_MSG_CTRL_MOCK_RESET_COLD;
+    msg_tx.data.buf_len_exp = 0U;
+    msg_tx.hdr.size = offsetof(swicc_net_msg_data_st, buf);
+
+    if (client_msg_io(slot_num, true) != 0 ||
+        msg_rx.data.ctrl != SWICC_NET_MSG_CTRL_SUCCESS)
+    {
+        return -1;
+    }
+
+    /**
+     * At this point the ICC has been mock initialized and the interface
+     * contacts shall be in the 'ready' state.
+     */
+    client_icc[slot_num].cont_iface = FSM_STATE_CONT_READY;
+
+    /**
+     * Make sure that the response contains an ATR (that's non-zero in length).
+     */
+    if (msg_rx.hdr.size <= offsetof(swicc_net_msg_data_st, buf))
+    {
+        Log1(PCSC_LOG_ERROR, "ICC ATR is invalid.");
+        return -1;
+    }
+    client_icc[slot_num].atr_len =
+        (uint32_t)(msg_rx.hdr.size - offsetof(swicc_net_msg_data_st, buf));
+    memcpy(client_icc[slot_num].atr, msg_rx.data.buf,
+           client_icc[slot_num].atr_len);
+    return 0;
+}
+
+static void net_logger(char const *const fmt, ...)
+{
+    va_list argptr;
+    va_start(argptr, fmt);
+    log_msg(PCSC_LOG_DEBUG, fmt, argptr);
+    va_end(argptr);
+}
+
+static bool icc_present(uint16_t const slot_num)
+{
+    return server_ctx.sock_client[slot_num] >= 0;
+}
+
 RESPONSECODE IFDHCreateChannelByName(DWORD const Lun, LPSTR const DeviceName)
 {
     Log3(PCSC_LOG_DEBUG, "Lun=0x%04lX, DeviceName='%s'", Lun, DeviceName);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
@@ -63,7 +187,20 @@ RESPONSECODE IFDHCreateChannelByName(DWORD const Lun, LPSTR const DeviceName)
              DIR_PCSC_DEV, DeviceName);
         return IFD_COMMUNICATION_ERROR;
     }
-    if (io_init(&io_ctx, IFD_SERVER_PORT) != 0)
+
+    /* Initialize the server context. */
+    server_ctx.sock_server = -1;
+    for (uint16_t client_sock_idx = 0U; client_sock_idx < IFD_SLOT_COUNT_MAX;
+         ++client_sock_idx)
+    {
+        server_ctx.sock_client[client_sock_idx] = -1;
+    }
+
+    /* Use the PC/SC-lite logging functions. */
+    swicc_net_logger_register(net_logger);
+
+    if (swicc_net_server_create(&server_ctx, IFD_SERVER_PORT_STR) !=
+        SWICC_RET_SUCCESS)
     {
         return IFD_COMMUNICATION_ERROR;
     }
@@ -75,13 +212,13 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode, PUCHAR TxBuffer,
                          LPDWORD pdwBytesReturned)
 {
     Log9(PCSC_LOG_DEBUG,
-         "Lun=0x%04lX, dwControlCode=%lu, TxBuffer=0x%p, TxLength=%lu, "
-         "RxBuffer=0x%p, RxLength=%lu, pdwBytesReturned=%p%c",
+         "Lun=0x%04lX, dwControlCode=%lu, TxBuffer=%p, TxLength=%lu, "
+         "RxBuffer=%p, RxLength=%lu, pdwBytesReturned=%p%c",
          Lun, dwControlCode, TxBuffer, TxLength, RxBuffer, RxLength,
          pdwBytesReturned, '\0');
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
@@ -104,28 +241,25 @@ RESPONSECODE IFDHCloseChannel(DWORD Lun)
 {
     Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX", Lun);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
     }
 
-    if (io_fini(&io_ctx) != 0)
-    {
-        return IFD_COMMUNICATION_ERROR;
-    }
+    swicc_net_server_destroy(&server_ctx);
     return IFD_SUCCESS;
 }
 
 RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length,
                                  PUCHAR Value)
 {
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=0x%p, Value=%p", Lun,
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%p, Value=%p", Lun,
          Tag, Length, Value);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
@@ -142,11 +276,11 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length,
 RESPONSECODE IFDHSetCapabilities(DWORD Lun, DWORD Tag, DWORD Length,
                                  PUCHAR Value)
 {
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%lu, Value=0x%p",
-         Lun, Tag, Length, Value);
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%lu, Value=%p", Lun,
+         Tag, Length, Value);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
@@ -162,28 +296,95 @@ RESPONSECODE IFDHSetProtocolParameters(DWORD Lun, DWORD Protocol, UCHAR Flags,
          "Lun=0x%04lX, Protocol=%lu, Flags=%u, PTS1=%u, PTS2=%u, PTS3=%u%c%c",
          Lun, Protocol, Flags, PTS1, PTS2, PTS3, '\0', '\0');
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
     }
 
-    return IFD_ERROR_NOT_SUPPORTED;
+    /* Only protocol selection is supported, PTS negotiation is not. */
+    if (Flags != 0 || PTS1 != 0 || PTS2 != 0 || PTS3 != 0)
+    {
+        return IFD_NOT_SUPPORTED;
+    }
+
+    /* Check if ICC is present. */
+    if (icc_present(slot_num))
+    {
+        switch (Protocol)
+        {
+        case SCARD_PROTOCOL_T0:
+            return IFD_SUCCESS;
+        case SCARD_PROTOCOL_T1:
+            /* swICC does not support T=1. */
+            return IFD_PROTOCOL_NOT_SUPPORTED;
+        default:
+            /* Unexpected. */
+            return IFD_COMMUNICATION_ERROR;
+        }
+    }
+    else
+    {
+        return IFD_COMMUNICATION_ERROR;
+    }
 }
 
 RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action, PUCHAR Atr, PDWORD AtrLength)
 {
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Action=%lu, Atr=0x%p, AtrLength=0x%p",
-         Lun, Action, Atr, AtrLength);
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Action=%lu, Atr=%p, AtrLength=%p", Lun,
+         Action, Atr, AtrLength);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
     }
 
+    /* Check if ICC is present. */
+    if (!icc_present(slot_num))
+    {
+        return IFD_COMMUNICATION_ERROR;
+    }
+
+    switch (Action)
+    {
+    case IFD_RESET:
+    /**
+     * A warm reset is not a cold reset but functionally they
+     * are the same.
+     */
+    case IFD_POWER_UP:
+        /**
+         * If ICC is already powered-up, give back the ATR, otherwise power up
+         * the ICC.
+         */
+        if (client_icc[slot_num].atr_len <= 0)
+        {
+            if (icc_powerup(slot_num) != 0)
+            {
+                return IFD_ERROR_POWER_ACTION;
+            }
+        }
+
+        /* Check if the AtrBuffer can contain the ICC ATR. */
+        if (*AtrLength < client_icc[slot_num].atr_len)
+        {
+            Log1(PCSC_LOG_ERROR,
+                 "Supplied ATR buffer is too small to contain ICC ATR.");
+            return IFD_COMMUNICATION_ERROR;
+        }
+
+        *AtrLength = client_icc[slot_num].atr_len;
+        memcpy(Atr, client_icc[slot_num].atr, client_icc[slot_num].atr_len);
+        return IFD_SUCCESS;
+    case IFD_POWER_DOWN:
+        /* No need to do power management so do nothing on power-down. */
+        return IFD_SUCCESS;
+    default:
+        break;
+    }
     return IFD_ERROR_NOT_SUPPORTED;
 }
 
@@ -192,39 +393,222 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
                                PDWORD RxLength, PSCARD_IO_HEADER RecvPci)
 {
     Log9(PCSC_LOG_DEBUG,
-         "Lun=0x%04lX, SendPci=0x%p, TxBuffer=0x%p, TxLength=%lu, "
-         "RxBuffer=0x%p, "
-         "RxLength=0x%p, RecvPci=0x%p%c",
+         "Lun=0x%04lX, SendPci=%p, TxBuffer=%p, TxLength=%lu, RxBuffer=%p, "
+         "RxLength=%p, RecvPci=%p%c",
          Lun, &SendPci, TxBuffer, TxLength, RxBuffer, RxLength, RecvPci, '\0');
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint64_t const rx_buf_len = *RxLength;
+    /* Driver shall set RxLength to 0 on error. We do this ahead of time. */
+    *RxLength = 0;
+
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
     }
 
-    return IFD_ERROR_NOT_SUPPORTED;
+    /**
+     * @warning SendPci is not used (stated in PC/SC-lite docs).
+     */
+
+    /* Check if ICC is present. */
+    if (icc_present(slot_num))
+    {
+        /* APDU must contain a header. */
+        if (TxLength < 5U)
+        {
+            Log1(PCSC_LOG_ERROR, "APDU is missing a header.");
+            return IFD_COMMUNICATION_ERROR;
+        }
+
+        uint8_t const apdu_ins = TxBuffer[1U];
+        uint8_t const apdu_ins_xor_ff = apdu_ins ^ 0xFF;
+        uint64_t len_rem = TxLength;
+
+        /**
+         * Iterate as many times as are needed to transfer all data from the
+         * buffer and until ICC needs more data than can be provided.
+         */
+        while (len_rem > 0 || client_icc[slot_num].buf_len_exp == 0)
+        {
+            /* How much data was requested by the ICC. */
+            uint32_t const icc_buf_len_exp = client_icc[slot_num].buf_len_exp;
+
+            Log3(PCSC_LOG_DEBUG, "ICC expects %uB. %luB remaining in TxBuffer.",
+                 icc_buf_len_exp, len_rem);
+            if (len_rem < icc_buf_len_exp)
+            {
+                Log3(PCSC_LOG_ERROR,
+                     "ICC expects %uB, have only %luB to transmit.",
+                     icc_buf_len_exp, len_rem);
+                return IFD_COMMUNICATION_ERROR;
+            }
+
+            memset(&msg_tx, 0U, sizeof(msg_tx));
+            msg_tx.data.cont_state = client_icc[slot_num].cont_iface;
+            memcpy(msg_tx.data.buf, &TxBuffer[TxLength - len_rem],
+                   icc_buf_len_exp);
+            msg_tx.hdr.size =
+                offsetof(swicc_net_msg_data_st, buf) + icc_buf_len_exp;
+            if (client_msg_io(slot_num, true) != 0 ||
+                msg_rx.data.ctrl != SWICC_NET_MSG_CTRL_SUCCESS)
+            {
+                return IFD_COMMUNICATION_ERROR;
+            }
+
+            /**
+             * After I/O, if the remaining length is 0, it means the command was
+             * sent and ICC should have responsed with a response TPDU.
+             */
+            len_rem -= icc_buf_len_exp;
+            Log2(PCSC_LOG_DEBUG, "TxBuffer contains %luB after transmission.",
+                 len_rem);
+
+            /* Safe cast since the swICC net functions validated the message. */
+            uint32_t const msg_rx_buf_len =
+                (uint32_t)(msg_rx.hdr.size -
+                           offsetof(swicc_net_msg_data_st, buf));
+            Log2(PCSC_LOG_DEBUG, "Received %uB from ICC.", msg_rx_buf_len);
+
+            /**
+             * While transmitting the APDU, shall not receive any data in
+             * responses, procedure bytes are ok.
+             */
+            if (msg_rx_buf_len == 1U)
+            {
+                /* Got a procedure byte. */
+                uint8_t const procedure = msg_rx.data.buf[0U];
+                if (procedure == 0x60) /* NACK */
+                {
+                    /* Stop processing command here. */
+                    /**
+                     * @todo What should the response APDU be for NACK?
+                     */
+                    break;
+                }
+                else if (procedure == apdu_ins ||
+                         procedure == apdu_ins_xor_ff) /* ACK */
+                {
+                    /* Continue sending data. */
+                }
+                else
+                {
+                    Log1(PCSC_LOG_ERROR, "Received an invalid procedure.");
+                    return IFD_COMMUNICATION_ERROR;
+                }
+            }
+            else if (msg_rx_buf_len == 2U)
+            {
+                /**
+                 * Got a status before transmitting the whole message. This is
+                 * our response to the APDU.
+                 */
+                break;
+            }
+            else if (msg_rx_buf_len == 0U)
+            {
+                /**
+                 * 0 means the ICC is most likely changing state, this is okay.
+                 */
+                /* Continue sending data. */
+            }
+            else
+            {
+                /**
+                 * This would mean we got a response because there is no more
+                 * data to send.
+                 */
+                if (len_rem == 0)
+                {
+                    break;
+                }
+
+                /* Didn't send all the data but got more data than expected. */
+                Log1(PCSC_LOG_ERROR,
+                     "Received too much or too little data from ICC.");
+                return IFD_COMMUNICATION_ERROR;
+            }
+        }
+
+        /* Safe cast since the swICC net functions validated the message. */
+        uint32_t const tpdu_len =
+            (uint32_t)(msg_rx.hdr.size - offsetof(swicc_net_msg_data_st, buf));
+        Log2(PCSC_LOG_DEBUG, "TPDU response length is %u.", tpdu_len);
+
+        /* Expecting at least a status word or a TPDU header. */
+        if (tpdu_len == 2U || tpdu_len >= 5U)
+        {
+
+            /* RxBuffer is too small to contain the APDU response. */
+            if (rx_buf_len < tpdu_len)
+            {
+                return IFD_COMMUNICATION_ERROR;
+            }
+
+            /**
+             * Write the response TPDU to the RX buffer (and set length
+             * accordingly).
+             */
+            memcpy(RxBuffer, msg_rx.data.buf, tpdu_len);
+            *RxLength = tpdu_len;
+
+            /**
+             * @warning RecvPci is not used (stated in PC/SC-lite docs).
+             */
+
+            return IFD_SUCCESS;
+        }
+        else
+        {
+            Log2(PCSC_LOG_ERROR,
+                 "ICC sent an invalid TPDU: tpdu_len=%u, expected =2 or >=5.",
+                 tpdu_len);
+            return IFD_COMMUNICATION_ERROR;
+        }
+    }
+    else
+    {
+        return IFD_ICC_NOT_PRESENT;
+    }
 }
 
 RESPONSECODE IFDHICCPresence(DWORD Lun)
 {
     Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX", Lun);
 
-    DWORD reader_num;
-    DWORD slot_num;
+    uint16_t reader_num;
+    uint16_t slot_num;
     if (lun_parse(Lun, &reader_num, &slot_num) != 0)
     {
         return IFD_COMMUNICATION_ERROR;
     }
 
-    if (io_ctx.sock_client[slot_num] >= 0)
+    /* Check if ICC is already thought to be present. */
+    if (icc_present(slot_num))
     {
-        return IFD_ICC_PRESENT;
+        /* Send a keep-alive message to ICC to see if it's still connected. */
+        memset(&msg_tx, 0U, sizeof(msg_tx));
+        msg_tx.data.cont_state = client_icc[slot_num].cont_iface;
+        msg_tx.data.ctrl = SWICC_NET_MSG_CTRL_KEEPALIVE;
+        msg_tx.hdr.size = offsetof(swicc_net_msg_data_st, buf);
+
+        if (client_msg_io(slot_num, false) == 0 &&
+            msg_rx.data.ctrl == SWICC_NET_MSG_CTRL_SUCCESS)
+        {
+            return IFD_ICC_PRESENT;
+        }
+
+        /* Sending or receiving errors are treated as a missing ICC. */
+        Log1(PCSC_LOG_INFO, "Client keep-alive failed. Disconnecting it.");
+        client_disconnect(slot_num);
+        return IFD_ICC_NOT_PRESENT;
     }
     else
     {
-        if (io_client_connect(&io_ctx, &io_ctx.sock_client[slot_num]) == 0)
+        /* Safe cast since parsing Lun rejects invalid slots. */
+        if (swicc_net_server_client_connect(&server_ctx, (uint16_t)slot_num) ==
+            0)
         {
             return IFD_ICC_PRESENT;
         }
