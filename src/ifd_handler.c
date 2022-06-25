@@ -351,10 +351,15 @@ RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action, PUCHAR Atr, PDWORD AtrLength)
     switch (Action)
     {
     case IFD_RESET:
-    /**
-     * A warm reset is not a cold reset but functionally they
-     * are the same.
-     */
+        /**
+         * A warm reset is not a cold reset but functionally they
+         * are the same.
+         */
+        if (icc_powerup(slot_num) != 0)
+        {
+            return IFD_ERROR_POWER_ACTION;
+        }
+        __attribute__((fallthrough));
     case IFD_POWER_UP:
         /**
          * If ICC is already powered-up, give back the ATR, otherwise power up
@@ -547,9 +552,8 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
         Log2(PCSC_LOG_DEBUG, "TPDU response length is %u.", tpdu_len);
 
         /* Expecting at least a status word or a TPDU header. */
-        if (tpdu_len == 2U || tpdu_len >= 5U)
+        if (tpdu_len >= 2U)
         {
-
             /* RxBuffer is too small to contain the APDU response. */
             if (rx_buf_len < tpdu_len)
             {
