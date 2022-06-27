@@ -31,7 +31,11 @@ static swicc_net_msg_st msg_rx;
 /* Keep track of client ICCs. */
 static client_icc_st client_icc[IFD_SLOT_COUNT_MAX];
 
-static char dbg_str[2048U];
+#ifdef DEBUG
+static char dbg_str[4096U];
+#else
+static char dbg_str[0U];
+#endif
 static uint16_t dbg_str_len;
 
 /**
@@ -159,10 +163,12 @@ static int32_t icc_powerup(uint16_t const slot_num)
 
 static void net_logger(char const *const fmt, ...)
 {
+#ifdef DEBUG
     va_list argptr;
     va_start(argptr, fmt);
     log_msg(PCSC_LOG_DEBUG, fmt, argptr);
     va_end(argptr);
+#endif
 }
 
 static bool icc_present(uint16_t const slot_num)

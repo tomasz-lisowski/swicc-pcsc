@@ -1,5 +1,5 @@
 SEMVER_MAJOR:=0
-SEMVER_MINOR:=3
+SEMVER_MINOR:=4
 SEMVER_PATCH:=0
 SEMVER_STR:=$(SEMVER_MAJOR).$(SEMVER_MINOR).$(SEMVER_PATCH)
 
@@ -45,11 +45,14 @@ all: main
 main: MAIN_LD_FLAGS+=-s
 main: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED)
 main-dbg-asan: MAIN_CC_FLAGS+=-fsanitize=address
-main-dbg-asan: main-dbg
+main-dbg-asan: main-dbg-clr
+main-dbg-clr: MAIN_CC_FLAGS+=-g -DDEBUG -DDEBUG_CLR
+main-dbg-clr: MAIN_LIBSWICC_TARGET:=main-dbg-clr
+main-dbg-clr: main
 main-dbg: MAIN_LIBSWICC_TARGET:=main-dbg
 main-dbg: MAIN_CC_FLAGS+=-g -DDEBUG
 main-dbg: main
-.PHONY: main main-dbg main-dbg-asan
+.PHONY: main main-dbg main-dbg-clr main-dbg-asan
 
 install: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED) $(DIR_BUILD)/reader.conf
 ifeq ($(OS),Windows_NT)
