@@ -24,12 +24,12 @@ typedef struct client_icc_s
     uint32_t buf_len_exp;
 } client_icc_st;
 
-static swicc_net_server_st server_ctx;
-static swicc_net_msg_st msg_tx;
-static swicc_net_msg_st msg_rx;
+static swicc_net_server_st server_ctx = {.sock_server = -1};
+static swicc_net_msg_st msg_tx = {0U};
+static swicc_net_msg_st msg_rx = {0U};
 
 /* Keep track of client ICCs. */
-static client_icc_st client_icc[IFD_SLOT_COUNT_MAX];
+static client_icc_st client_icc[IFD_SLOT_COUNT_MAX] = {0U};
 
 #ifdef DEBUG
 static char dbg_str[4096U];
@@ -55,14 +55,14 @@ static int32_t lun_parse(DWORD const Lun, uint16_t *const reader_num,
 
     if (*slot_num >= IFD_SLOT_COUNT_MAX)
     {
-        Log2(PCSC_LOG_ERROR, "Tried to create an unsupported slot: slot_num=%u",
-             *slot_num);
+        Log2(PCSC_LOG_ERROR,
+             "Tried to create an unsupported slot: slot_num=%u.", *slot_num);
         return IFD_COMMUNICATION_ERROR;
     }
     if (*reader_num != 0U)
     {
         Log2(PCSC_LOG_ERROR,
-             "Tried to create an unsupported reader: reader_num=%u",
+             "Tried to create an unsupported reader: reader_num=%u.",
              *reader_num);
         return IFD_COMMUNICATION_ERROR;
     }
@@ -176,9 +176,14 @@ static bool icc_present(uint16_t const slot_num)
     return server_ctx.sock_client[slot_num] >= 0;
 }
 
+static bool reader_present()
+{
+    return server_ctx.sock_server >= 0;
+}
+
 RESPONSECODE IFDHCreateChannelByName(DWORD const Lun, LPSTR const DeviceName)
 {
-    Log3(PCSC_LOG_DEBUG, "Lun=0x%04lX, DeviceName='%s'", Lun, DeviceName);
+    Log3(PCSC_LOG_DEBUG, "Lun=0x%04lX, DeviceName='%s'.", Lun, DeviceName);
 
     uint16_t reader_num;
     uint16_t slot_num;
@@ -189,28 +194,13 @@ RESPONSECODE IFDHCreateChannelByName(DWORD const Lun, LPSTR const DeviceName)
 
     if (strncmp(DeviceName, DIR_PCSC_DEV, strlen(DIR_PCSC_DEV)) != 0)
     {
-        Log3(PCSC_LOG_ERROR, "Expected device '%s' but got DeviceName='%s'",
+        Log3(PCSC_LOG_ERROR, "Expected device '%s' but got DeviceName='%s'.",
              DIR_PCSC_DEV, DeviceName);
         return IFD_COMMUNICATION_ERROR;
     }
 
-    /* Initialize the server context. */
-    server_ctx.sock_server = -1;
-    for (uint16_t client_sock_idx = 0U; client_sock_idx < IFD_SLOT_COUNT_MAX;
-         ++client_sock_idx)
-    {
-        server_ctx.sock_client[client_sock_idx] = -1;
-    }
-
-    /* Use the PC/SC-lite logging functions. */
-    swicc_net_logger_register(net_logger);
-
-    if (swicc_net_server_create(&server_ctx, IFD_SERVER_PORT_STR) !=
-        SWICC_RET_SUCCESS)
-    {
-        return IFD_COMMUNICATION_ERROR;
-    }
-    return IFD_SUCCESS;
+    /* Channel is ignored. */
+    return IFDHCreateChannel(Lun, 0U);
 }
 
 RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode, PUCHAR TxBuffer,
@@ -219,7 +209,7 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode, PUCHAR TxBuffer,
 {
     Log9(PCSC_LOG_DEBUG,
          "Lun=0x%04lX, dwControlCode=%lu, TxBuffer=%p, TxLength=%lu, "
-         "RxBuffer=%p, RxLength=%lu, pdwBytesReturned=%p%c",
+         "RxBuffer=%p, RxLength=%lu, pdwBytesReturned=%p.%c",
          Lun, dwControlCode, TxBuffer, TxLength, RxBuffer, RxLength,
          pdwBytesReturned, '\0');
 
@@ -235,17 +225,8 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD dwControlCode, PUCHAR TxBuffer,
 
 RESPONSECODE IFDHCreateChannel(DWORD Lun, DWORD Channel)
 {
-    Log3(PCSC_LOG_DEBUG, "Lun=0x%04lX, Channel=%lu", Lun, Channel);
-    /**
-     * This method has been superseded by 'IFDHCreateChannelByName' so this will
-     * remain unimplemented.
-     */
-    return IFD_ERROR_NOT_SUPPORTED;
-}
-
-RESPONSECODE IFDHCloseChannel(DWORD Lun)
-{
-    Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX", Lun);
+    /* Channel is ignored. */
+    Log3(PCSC_LOG_DEBUG, "Lun=0x%04lX, Channel=%lu.", Lun, Channel);
 
     uint16_t reader_num;
     uint16_t slot_num;
@@ -254,14 +235,132 @@ RESPONSECODE IFDHCloseChannel(DWORD Lun)
         return IFD_COMMUNICATION_ERROR;
     }
 
-    swicc_net_server_destroy(&server_ctx);
+    if (!reader_present())
+    {
+        /* Initialize the server context. */
+        server_ctx.sock_server = -1;
+        for (uint16_t client_sock_idx = 0U;
+             client_sock_idx < IFD_SLOT_COUNT_MAX; ++client_sock_idx)
+        {
+            server_ctx.sock_client[client_sock_idx] = -1;
+        }
+
+        /* Use the PC/SC-lite logging functions. */
+        swicc_net_logger_register(net_logger);
+
+        if (swicc_net_server_create(&server_ctx, IFD_SERVER_PORT_STR) !=
+            SWICC_RET_SUCCESS)
+        {
+            return IFD_COMMUNICATION_ERROR;
+        }
+    }
+    else
+    {
+        if (icc_present(slot_num))
+        {
+            /* Already present. */
+            return IFD_COMMUNICATION_ERROR;
+        }
+    }
+
+    return IFD_SUCCESS;
+}
+
+RESPONSECODE IFDHCloseChannel(DWORD Lun)
+{
+    Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX.", Lun);
+
+    uint16_t reader_num;
+    uint16_t slot_num;
+    if (lun_parse(Lun, &reader_num, &slot_num) != 0)
+    {
+        return IFD_COMMUNICATION_ERROR;
+    }
+
+    /* Destroying channel 0 leads to destruction of the whole reader. */
+    if (reader_present())
+    {
+        /**
+         * @warning This assumes that slot 0 will be destroyed first.
+         */
+        if (slot_num == 0)
+        {
+            swicc_net_server_destroy(&server_ctx);
+        }
+        else
+        {
+            swicc_net_server_client_disconnect(&server_ctx, slot_num);
+        }
+    }
     return IFD_SUCCESS;
 }
 
 RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length,
                                  PUCHAR Value)
 {
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%p, Value=%p", Lun,
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%p, Value=%p.", Lun,
+         Tag, Length, Value);
+
+    uint16_t reader_num;
+    uint16_t slot_num;
+    if (lun_parse(Lun, &reader_num, &slot_num) != 0)
+    {
+        return IFD_COMMUNICATION_ERROR;
+    }
+
+    if (!reader_present())
+    {
+        return IFD_NO_SUCH_DEVICE;
+    }
+
+    switch (Tag)
+    {
+    case TAG_IFD_ATR:
+        if (icc_present(slot_num))
+        {
+            if (*Length < client_icc->atr_len)
+            {
+                return IFD_ERROR_INSUFFICIENT_BUFFER;
+            }
+            memcpy(Value, client_icc->atr, client_icc->atr_len);
+            *Length = client_icc->atr_len;
+            return IFD_SUCCESS;
+        }
+        return IFD_COMMUNICATION_ERROR;
+    case TAG_IFD_SIMULTANEOUS_ACCESS:
+        /* The driver can handle only 1 reader at any time. */
+        Value[0U] = 1U;
+        Log2(PCSC_LOG_INFO, "Supported reader count: %u.", Value[0U]);
+        return IFD_SUCCESS;
+    case TAG_IFD_THREAD_SAFE:
+        /* Reader slots cannot be accessed simultaneously. */
+        Value[0U] = 0U;
+        Log2(PCSC_LOG_INFO, "Supporting thread-safe readers: %u.", Value[0U]);
+        return IFD_SUCCESS;
+    case TAG_IFD_SLOTS_NUMBER:
+        /* Number of slots in this reader. */
+        Value[0U] = IFD_SLOT_COUNT_MAX;
+        Log2(PCSC_LOG_INFO, "Supported slot count per reader: %u.", Value[0U]);
+        return IFD_SUCCESS;
+    case TAG_IFD_SLOT_THREAD_SAFE:
+        /* Multiple slots can't be accessed simultaneously. */
+        Value[0U] = 0U;
+        Log2(PCSC_LOG_INFO, "Supporting thread-safe slots: %u.", Value[0U]);
+        return IFD_SUCCESS;
+    case TAG_IFD_STOP_POLLING_THREAD:
+    case TAG_IFD_POLLING_THREAD_KILLABLE:
+    case TAG_IFD_POLLING_THREAD_WITH_TIMEOUT:
+        Log1(PCSC_LOG_INFO, "Capability not supported.");
+        return IFD_NOT_SUPPORTED;
+    default:
+        return IFD_ERROR_TAG;
+    }
+}
+
+RESPONSECODE IFDHSetCapabilities(DWORD Lun, DWORD Tag, DWORD Length,
+                                 PUCHAR Value)
+{
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%lu, Value=%p.", Lun,
          Tag, Length, Value);
 
     uint16_t reader_num;
@@ -274,32 +373,15 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length,
     switch (Tag)
     {
     default:
-        break;
+        return IFD_ERROR_TAG;
     }
-    return IFD_ERROR_NOT_SUPPORTED;
-}
-
-RESPONSECODE IFDHSetCapabilities(DWORD Lun, DWORD Tag, DWORD Length,
-                                 PUCHAR Value)
-{
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Tag=0x%04lX, Length=%lu, Value=%p", Lun,
-         Tag, Length, Value);
-
-    uint16_t reader_num;
-    uint16_t slot_num;
-    if (lun_parse(Lun, &reader_num, &slot_num) != 0)
-    {
-        return IFD_COMMUNICATION_ERROR;
-    }
-
-    return IFD_ERROR_NOT_SUPPORTED;
 }
 
 RESPONSECODE IFDHSetProtocolParameters(DWORD Lun, DWORD Protocol, UCHAR Flags,
                                        UCHAR PTS1, UCHAR PTS2, UCHAR PTS3)
 {
     Log9(PCSC_LOG_DEBUG,
-         "Lun=0x%04lX, Protocol=%lu, Flags=%u, PTS1=%u, PTS2=%u, PTS3=%u%c%c",
+         "Lun=0x%04lX, Protocol=%lu, Flags=%u, PTS1=%u, PTS2=%u, PTS3=%u.%c%c",
          Lun, Protocol, Flags, PTS1, PTS2, PTS3, '\0', '\0');
 
     uint16_t reader_num;
@@ -338,7 +420,7 @@ RESPONSECODE IFDHSetProtocolParameters(DWORD Lun, DWORD Protocol, UCHAR Flags,
 
 RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action, PUCHAR Atr, PDWORD AtrLength)
 {
-    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Action=%lu, Atr=%p, AtrLength=%p", Lun,
+    Log5(PCSC_LOG_DEBUG, "Lun=0x%04lX, Action=%lu, Atr=%p, AtrLength=%p.", Lun,
          Action, Atr, AtrLength);
 
     uint16_t reader_num;
@@ -405,7 +487,7 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
 {
     Log9(PCSC_LOG_DEBUG,
          "Lun=0x%04lX, SendPci=%p, TxBuffer=%p, TxLength=%lu, RxBuffer=%p, "
-         "RxLength=%p, RecvPci=%p%c",
+         "RxLength=%p, RecvPci=%p%c.",
          Lun, &SendPci, TxBuffer, TxLength, RxBuffer, RxLength, RecvPci, '\0');
 
     uint64_t const rx_buf_len = *RxLength;
@@ -595,7 +677,7 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci,
 
 RESPONSECODE IFDHICCPresence(DWORD Lun)
 {
-    Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX", Lun);
+    Log2(PCSC_LOG_DEBUG, "Lun=0x%04lX.", Lun);
 
     uint16_t reader_num;
     uint16_t slot_num;
@@ -605,7 +687,7 @@ RESPONSECODE IFDHICCPresence(DWORD Lun)
     }
 
     /* Check if ICC is already thought to be present. */
-    if (icc_present(slot_num))
+    if (reader_present() && icc_present(slot_num))
     {
         /* Send a keep-alive message to ICC to see if it's still connected. */
         memset(&msg_tx, 0U, sizeof(msg_tx));
@@ -626,19 +708,15 @@ RESPONSECODE IFDHICCPresence(DWORD Lun)
     }
     else
     {
-        /* Safe cast since parsing Lun rejects invalid slots. */
-        if (swicc_net_server_client_connect(&server_ctx, (uint16_t)slot_num) ==
-            0)
+        if (reader_present())
         {
-            return IFD_ICC_PRESENT;
+            /* Safe cast since parsing Lun rejects invalid slots. */
+            if (swicc_net_server_client_connect(&server_ctx,
+                                                (uint16_t)slot_num) == 0)
+            {
+                return IFD_ICC_PRESENT;
+            }
         }
-        else
-        {
-            return IFD_ICC_NOT_PRESENT;
-        }
+        return IFD_ICC_NOT_PRESENT;
     }
-    /**
-     * Never returning IFD_NO_SUCH_DEVICE because a software-only reader is
-     * always present.
-     */
 }
