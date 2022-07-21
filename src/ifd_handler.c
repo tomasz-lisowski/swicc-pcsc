@@ -41,9 +41,9 @@ static uint16_t dbg_str_len;
 /**
  * @brief Parse the Lun into a reader number and slot number and check that
  * these values are in sane ranges.
- * @param Lun Yhe Lun to parse.
- * @param reader_num Where to write the number of the reader.
- * @param slot_num Where to write the number of the slot.
+ * @param[in] Lun Yhe Lun to parse.
+ * @param[out] reader_num Where to write the number of the reader.
+ * @param[out] slot_num Where to write the number of the slot.
  * @return 0 on valid Lun (success), -1 on invalid Lun (failure).
  */
 static int32_t lun_parse(DWORD const Lun, uint16_t *const reader_num,
@@ -69,6 +69,12 @@ static int32_t lun_parse(DWORD const Lun, uint16_t *const reader_num,
     return 0;
 }
 
+/**
+ * @brief Send the TX message, and receive the response into the RX message.
+ * @param[in] slot_num Communicate with the card in a given slot.
+ * @param[in] log_msg_enable If the exchange should be logged.
+ * @return 0 on success, -1 on failure.
+ */
 static int32_t client_msg_io(uint16_t const slot_num, bool const log_msg_enable)
 {
     if (log_msg_enable)
@@ -118,6 +124,10 @@ static int32_t client_msg_io(uint16_t const slot_num, bool const log_msg_enable)
     return 0;
 }
 
+/**
+ * @brief Disconnect a client making sure to cleanup any state realted to it.
+ * @param[in] slot_num
+ */
 static void client_disconnect(uint16_t const slot_num)
 {
     swicc_net_server_client_disconnect(&server_ctx, (uint16_t)slot_num);
@@ -126,6 +136,11 @@ static void client_disconnect(uint16_t const slot_num)
     client_icc[slot_num].cont_icc = 0U;
 }
 
+/**
+ * @brief Perform an ICC powerup (cold reset with PPS exchange).
+ * @param[in] slot_num
+ * @return 0 on success, -1 on failure.
+ */
 static int32_t icc_powerup(uint16_t const slot_num)
 {
     /* All contact states are set to valid. */
@@ -161,6 +176,11 @@ static int32_t icc_powerup(uint16_t const slot_num)
     return 0;
 }
 
+/**
+ * @brief The logger that is used with the swICC network module. This is used so
+ * that the PC/SC-lite middleware logging utilities can be used.
+ */
+static swicc_net_logger_ft net_logger;
 static void net_logger(char const *const fmt, ...)
 {
 #ifdef DEBUG
@@ -171,11 +191,22 @@ static void net_logger(char const *const fmt, ...)
 #endif
 }
 
+/**
+ * @brief Check if ann ICC is present. This does not actually send any data to
+ * the card, just relies on the most recent information (last keep-alive
+ * message).
+ * @param[in] slot_num
+ * @return true if present, false if not.
+ */
 static bool icc_present(uint16_t const slot_num)
 {
     return server_ctx.sock_client[slot_num] >= 0;
 }
 
+/**
+ * @brief Check if the reader is present, i.e., if it has been initialized.
+ * @return true if present, false if not.
+ */
 static bool reader_present()
 {
     return server_ctx.sock_server >= 0;
