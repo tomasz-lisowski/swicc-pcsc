@@ -45,7 +45,7 @@ all: main
 main: MAIN_LD_FLAGS+=-s
 main: $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED)
 main-dbg: MAIN_LIBSWICC_TARGET:=main-dbg ARG="-DDEBUG_CLR"
-main-dbg: MAIN_CC_FLAGS+=-g -DDEBUG -fsanitize=address
+main-dbg: MAIN_CC_FLAGS+=-g -DDEBUG
 main-dbg: main
 .PHONY: main main-dbg
 
