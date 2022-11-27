@@ -54,7 +54,9 @@ ifeq ($(OS),Windows_NT)
 	$(call pal_clrtxt, $(CLR_RED), Installing is only supported on Linux.)
 	exit 1
 else
+	$(call pal_mkdir,$(DIR_READER_CONFD))
 	$(call pal_cp,$(DIR_BUILD)/reader.conf,$(DIR_READER_CONFD)/$(LIB_PREFIX)$(MAIN_NAME))
+	$(call pal_mkdir,$(DIR_PCSC_SERIAL))
 	$(call pal_cp,$(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED),$(DIR_PCSC_SERIAL)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED))
 endif
 uninstall:
@@ -67,7 +69,7 @@ $(DIR_BUILD)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED): $(DIR_BUILD) $(DIR_LIB
 	$(CC) -o $(@) $(MAIN_CC_FLAGS) $(MAIN_OBJ)
 
 $(DIR_BUILD)/reader.conf: $(DIR_BUILD)
-	echo "\
+	printf "\
 	FRIENDLYNAME \"swICC PC/SC IFD Driver v$(SEMVER_STR)\"\
 	\nDEVICENAME   $(DIR_PCSC_DEV)\
 	\nLIBPATH      $(DIR_PCSC_SERIAL)/$(LIB_PREFIX)$(MAIN_NAME).$(EXT_LIB_SHARED)"\
