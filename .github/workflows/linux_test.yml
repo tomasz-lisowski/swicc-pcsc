@@ -1,4 +1,4 @@
-name: Test compile, install, and run on Linux distros
+name: Test on Linux distros
 
 on: [push]
 
