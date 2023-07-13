@@ -717,6 +717,16 @@ RESPONSECODE IFDHICCPresence(DWORD Lun)
         return IFD_COMMUNICATION_ERROR;
     }
 
+    uint16_t slot_num_open_min = IFD_SLOT_COUNT_MAX;
+    for (uint16_t slot_i = 0; slot_i < IFD_SLOT_COUNT_MAX; ++slot_i)
+    {
+        if (server_ctx.sock_client[slot_i] < 0 && slot_i < slot_num_open_min)
+        {
+            slot_num_open_min = slot_i;
+            break;
+        }
+    }
+
     /* Check if ICC is already thought to be present. */
     if (reader_present() && icc_present(slot_num))
     {
@@ -739,6 +749,18 @@ RESPONSECODE IFDHICCPresence(DWORD Lun)
     }
     else
     {
+        /**
+         * Do not insert a new card on a slot which is not the smallest
+         * available slot. This makes sure that when a card is reinserted, it
+         * occupies the same reader slot.
+         */
+        if (slot_num != slot_num_open_min)
+        {
+            Log2(PCSC_LOG_DEBUG, "Slot empty but not minimal: min=%u.",
+                 slot_num_open_min);
+            return IFD_ICC_NOT_PRESENT;
+        }
+
         if (reader_present())
         {
             /* Safe cast since parsing Lun rejects invalid slots. */
