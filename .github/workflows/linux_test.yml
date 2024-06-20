@@ -117,7 +117,7 @@ jobs:
           zypper -nq update
       - name: Install Deps
         run: |
-          zypper -nq install git make cmake pkg-config gcc11 libpcsclite1 pcsc-lite-devel pcsc-lite
+          zypper -nq install openssh git make cmake pkg-config gcc11 libpcsclite1 pcsc-lite-devel pcsc-lite
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 11
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
