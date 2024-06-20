@@ -15,7 +15,7 @@ DIR_READER_CONFD:=/etc/reader.conf.d
 DIR_PCSC_SERIAL:=/usr/lib/pcsc/drivers/serial
 DIR_PCSC_DEV:=/dev/null
 
-MAIN_NAME:=swicc-drv-ifd
+MAIN_NAME:=swicc-pcsc
 MAIN_SRC:=$(wildcard $(DIR_SRC)/*.c)
 MAIN_OBJ:=$(MAIN_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o)
 MAIN_DEP:=$(MAIN_OBJ:%.o=%.d)

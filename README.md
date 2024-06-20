@@ -8,8 +8,8 @@ This is a PC/SC IFD (interface device) handler for [swICC-based cards](https://g
 - These instructions are for Debian and Ubuntu, for Arch, Fedora, and openSUSE take a look at `./doc/install.md`.
 - You need `make`, `cmake`, `gcc`, `pkg-config`, `libpcsclite1` (library for the pcsc-lite middleware), and `libpcsclite-dev` (other dev files for pcsc-lite) to compile the project. At runtime you will need the `pcscd` package which contains the pcsc-lite daemon.
 1. `sudo apt-get install make cmake gcc pkg-config libpcsclite1 libpcsclite-dev pcscd`
-2. `git clone --recurse-submodules git@github.com:tomasz-lisowski/swicc-drv-ifd.git`
-3. `cd swicc-drv-ifd`
+2. `git clone --recurse-submodules git@github.com:tomasz-lisowski/swicc-pcsc.git`
+3. `cd swicc-pcsc`
 4. `make main-dbg` (for more info on building and installing, take a look at `./doc/install.md`).
 5. `sudo make install`
 
