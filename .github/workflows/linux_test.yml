@@ -13,6 +13,8 @@ jobs:
       - name: Pacman Update
         run: |
           pacman-key --init
+          pacman-key --populate
+          pacman -Sy --noconfirm archlinux-keyring
           pacman -Syu --noconfirm
       - name: Install Deps
         run: |
