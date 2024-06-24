@@ -36,7 +36,7 @@ MAIN_CC_FLAGS:=\
 	$(shell pkg-config --cflags-only-I libpcsclite) \
 	-Wl,-whole-archive -lswicc -Wl,-no-whole-archive \
 	-DDIR_PCSC_DEV=\"$(DIR_PCSC_DEV)\"
-MAIN_LIBSWICC_TARGET:=main
+MAIN_LIBSWICC_TARGET:=main-static
 EXT_LIB_SHARED:=$(EXT_LIB_SHARED).$(SEMVER_STR)
 
 all: main
