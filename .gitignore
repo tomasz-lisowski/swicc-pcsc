@@ -1,5 +1,8 @@
-# Compiler output
+# Compiler output.
 build/
 
-# Clangd config
+# Clangd config.
 compile_flags.txt
+
+# Docker ouptut.
+docker.log
